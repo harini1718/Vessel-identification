@@ -51,8 +51,13 @@ def load_model(model_path: str) -> YOLO:
         )
 
     try:
-        model = YOLO(model_path)
-        logger.info("YOLO model loaded successfully from '%s'", model_path)
+        with Timer() as t:
+            model = YOLO(model_path)
+        logger.info(
+            "YOLO model loaded successfully from '%s' in %.2f s",
+            model_path,
+            t.elapsed,
+        )
         return model
     except Exception as e:
         logger.exception("Failed to load YOLO model from '%s'", model_path)
@@ -86,8 +91,14 @@ def run_segmentation(model: YOLO, image_path: str) -> dict:
 
     height, width = original.shape[:2]
 
+    logger.info("Running YOLO inference on '%s' (device=cpu).", image_path)
     with Timer() as t:
-        results = model(image_path, verbose=False)
+        results = model(image_path, device="cpu", verbose=False)
+    logger.info(
+        "YOLO inference finished in %.4f s for '%s'.",
+        t.elapsed,
+        image_path,
+    )
 
     result = results[0]
 

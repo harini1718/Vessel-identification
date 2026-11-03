@@ -19,6 +19,7 @@ Architecture Notes:
 """
 
 import os
+import time
 import uuid
 import logging
 
@@ -65,19 +66,28 @@ os.makedirs(os.path.join(BASE_DIR, "models"), exist_ok=True)
 # Load model ONCE at startup
 # ──────────────────────────────────────────────────────────
 yolo_model = None
+_model_load_start = time.perf_counter()
 
 try:
     yolo_model = load_model(MODEL_PATH)
-    logger.info("✓ YOLO model ready.")
+    logger.info(
+        "✓ YOLO model ready in %.2f s.",
+        time.perf_counter() - _model_load_start,
+    )
 except FileNotFoundError:
     logger.warning(
-        "⚠  Model file not found at '%s'. "
+        "⚠  Model file not found at '%s' after %.2f s. "
         "The app will start, but /process will return errors until "
         "you place best.pt in the models/ directory.",
         MODEL_PATH,
+        time.perf_counter() - _model_load_start,
     )
 except RuntimeError as e:
-    logger.error("✗ Failed to load model: %s", e)
+    logger.error(
+        "✗ Failed to load model after %.2f s: %s",
+        time.perf_counter() - _model_load_start,
+        e,
+    )
 
 
 # ──────────────────────────────────────────────────────────
@@ -146,6 +156,11 @@ def process_image():
     try:
         # ── 1. Segmentation (shown immediately in the UI) ──
         seg_result = run_segmentation(yolo_model, upload_path)
+        logger.info(
+            "Segmentation finished in %.4f s (has_detections=%s).",
+            seg_result["time"],
+            seg_result["has_detections"],
+        )
 
         seg_filename = f"seg_{stem}.png"
         seg_path = os.path.join(OUTPUT_FOLDER, seg_filename)

@@ -1,16 +1,18 @@
+--extra-index-url https://download.pytorch.org/whl/cpu
+
 # ──────────────────────────────────────────
 # Core
 # ──────────────────────────────────────────
 flask>=3.0,<4.0
-ultralytics>=8.0
+ultralytics==8.4.199
 opencv-python>=4.8
-numpy>=1.24
+numpy>=1.24,<3
 
 # ──────────────────────────────────────────
 # Ultralytics pulls these in, listed
 # explicitly for reproducibility
 # ──────────────────────────────────────────
-torch>=2.0
-torchvision>=0.15
+torch==2.15.0+cpu
+torchvision==0.29.2+cpu
 Pillow>=10.0
 gunicorn>=23.0
