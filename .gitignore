@@ -30,8 +30,6 @@ static/uploads/*
 static/outputs/*
 !static/outputs/.gitkeep
 
-# Model weights (large binary – track separately or via Git LFS)
-models/*.pt
 
 # Logs
 *.log
