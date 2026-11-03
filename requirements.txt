@@ -1,0 +1,15 @@
+# ──────────────────────────────────────────
+# Core
+# ──────────────────────────────────────────
+flask>=3.0,<4.0
+ultralytics>=8.0
+opencv-python>=4.8
+numpy>=1.24
+
+# ──────────────────────────────────────────
+# Ultralytics pulls these in, listed
+# explicitly for reproducibility
+# ──────────────────────────────────────────
+torch>=2.0
+torchvision>=0.15
+Pillow>=10.0

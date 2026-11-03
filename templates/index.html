@@ -1,0 +1,265 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Vessel Segmentation &amp; Rim Detection</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+</head>
+<body>
+
+<!-- ───────────────── HEADER ───────────────── -->
+<header class="app-header">
+    <div class="container">
+        <h1>🔬 Vessel Segmentation &amp; Rim Detection</h1>
+        <p class="subtitle">AI-powered vessel analysis using YOLOv11 segmentation &amp; OpenCV rim extraction</p>
+    </div>
+</header>
+
+<!-- ───────────────── MODEL STATUS ───────────────── -->
+<div class="container">
+    {% if not model_loaded %}
+    <div class="alert alert-error">
+        <strong>⚠ Model Not Loaded</strong> — Place your trained <code>best.pt</code> inside the
+        <code>models/</code> directory and restart the server.
+    </div>
+    {% else %}
+    <div class="alert alert-success">
+        <strong>✓ Model Ready</strong> — YOLO segmentation model loaded successfully.
+    </div>
+    {% endif %}
+
+    <!-- ───────────────── UPLOAD AREA ───────────────── -->
+    <div class="upload-section">
+        <div class="upload-box" id="dropZone">
+            <div class="upload-icon">📁</div>
+            <h3>Drop images here or click to browse</h3>
+            <p>Supports PNG, JPG, JPEG, BMP, TIFF, WebP &bull; Max 32 MB</p>
+            <input type="file" id="fileInput" multiple accept="image/*" hidden>
+            <button class="btn btn-primary" id="browseBtn">Select Images</button>
+        </div>
+    </div>
+
+    <!-- ───────────────── RESULTS CONTAINER ───────────────── -->
+    <div id="resultsContainer"></div>
+</div>
+
+<!-- ───────────────── FOOTER ───────────────── -->
+<footer class="app-footer">
+    <div class="container">
+        <p>&copy; 2026 Vessel Segmentation System &bull; All processing runs locally</p>
+    </div>
+</footer>
+
+<script>
+(function () {
+    "use strict";
+
+    const dropZone         = document.getElementById("dropZone");
+    const fileInput        = document.getElementById("fileInput");
+    const browseBtn        = document.getElementById("browseBtn");
+    const resultsContainer = document.getElementById("resultsContainer");
+
+    // ───────── Browse button ─────────
+    browseBtn.addEventListener("click", (e) => {
+        e.stopPropagation();
+        fileInput.click();
+    });
+    dropZone.addEventListener("click", () => fileInput.click());
+
+    // ───────── Drag & drop ─────────
+    ["dragenter", "dragover"].forEach((evt) =>
+        dropZone.addEventListener(evt, (e) => { e.preventDefault(); dropZone.classList.add("dragover"); })
+    );
+    ["dragleave", "drop"].forEach((evt) =>
+        dropZone.addEventListener(evt, (e) => { e.preventDefault(); dropZone.classList.remove("dragover"); })
+    );
+    dropZone.addEventListener("drop", (e) => handleFiles(e.dataTransfer.files));
+
+    fileInput.addEventListener("change", () => handleFiles(fileInput.files));
+
+    // ───────── Process each file independently ─────────
+    function handleFiles(fileList) {
+        if (!fileList || fileList.length === 0) return;
+        Array.from(fileList).forEach((file) => processFile(file));
+        fileInput.value = "";
+    }
+
+    function processFile(file) {
+        const allowed = ["image/png","image/jpeg","image/bmp","image/tiff","image/webp"];
+        if (!allowed.includes(file.type)) {
+            alert("Unsupported file type: " + file.type);
+            return;
+        }
+
+        // ── Create result card ──
+        const card = document.createElement("div");
+        card.className = "result-card";
+        card.innerHTML = buildCardSkeleton(file.name);
+        resultsContainer.prepend(card);
+
+        const statusEl   = card.querySelector(".status-text");
+        const stagesEl   = card.querySelector(".pipeline-stages");
+        const originalEl = card.querySelector(".img-original");
+        const segEl      = card.querySelector(".img-segmented");
+        const rimEl      = card.querySelector(".img-rim");
+        const timingsEl  = card.querySelector(".timings");
+        const errorEl    = card.querySelector(".error-message");
+
+        // Show original preview immediately
+        const reader = new FileReader();
+        reader.onload = (e) => {
+            originalEl.src = e.target.result;
+            originalEl.style.display = "block";
+            card.querySelector(".image-cell:first-child .img-placeholder").style.display = "none";
+        };
+        reader.readAsDataURL(file);
+
+        setStage(stagesEl, "upload", "active");
+        setStatus(statusEl, "Uploading…", "running");
+
+        // ── Upload via fetch ──
+        const formData = new FormData();
+        formData.append("file", file);
+
+        setStage(stagesEl, "upload", "done");
+        setStage(stagesEl, "segment", "active");
+        setStatus(statusEl, "Running Segmentation…", "running");
+
+        fetch("/process", { method: "POST", body: formData })
+            .then((res) => res.json())
+            .then((data) => {
+                if (!data.success) {
+                    throw new Error(data.error || "Unknown server error");
+                }
+
+                // Segmentation done
+                setStage(stagesEl, "segment", "done");
+                segEl.src = data.segmented_url;
+                segEl.style.display = "block";
+                card.querySelector(".image-cell:nth-child(2) .img-placeholder").style.display = "none";
+
+                // Rim done
+                setStage(stagesEl, "rim", "active");
+                setStatus(statusEl, "Extracting Rim…", "running");
+
+                setTimeout(() => {
+                    setStage(stagesEl, "rim", "done");
+                    rimEl.src = data.rim_url;
+                    rimEl.style.display = "block";
+                    card.querySelector(".image-cell:nth-child(3) .img-placeholder").style.display = "none";
+
+                    // Timings
+                    timingsEl.innerHTML =
+                        '<div class="timing-row">' +
+                            '<span class="timing-label">Segmentation</span>' +
+                            '<span class="timing-value">' + data.timings.segmentation.toFixed(2) + ' sec</span>' +
+                        '</div>' +
+                        '<div class="timing-row">' +
+                            '<span class="timing-label">Rim Extraction</span>' +
+                            '<span class="timing-value">' + data.timings.rim_extraction.toFixed(4) + ' sec</span>' +
+                        '</div>' +
+                        '<div class="timing-row timing-total">' +
+                            '<span class="timing-label">Total</span>' +
+                            '<span class="timing-value">' + data.timings.total.toFixed(2) + ' sec</span>' +
+                        '</div>';
+
+                    if (data.confidence !== null) {
+                        timingsEl.innerHTML +=
+                            '<div class="timing-row">' +
+                                '<span class="timing-label">Confidence</span>' +
+                                '<span class="timing-value">' + (data.confidence * 100).toFixed(1) + '%</span>' +
+                            '</div>';
+                    }
+
+                    if (!data.has_detections) {
+                        showWarning(errorEl, "No vessel detected in this image.");
+                    } else if (!data.has_rim) {
+                        showWarning(errorEl, "Vessel detected but rim extraction found no outer contour.");
+                    }
+
+                    setStatus(statusEl, "Completed", "done");
+                }, 300);
+            })
+            .catch((err) => {
+                setStatus(statusEl, "Failed", "error");
+                errorEl.textContent = err.message;
+                errorEl.style.display = "block";
+            });
+    }
+
+    // ───────── Card HTML skeleton ─────────
+    function buildCardSkeleton(filename) {
+        return '' +
+        '<div class="card-header">' +
+            '<h3 class="card-title" title="' + escapeHtml(filename) + '">' + escapeHtml(truncate(filename, 40)) + '</h3>' +
+            '<span class="status-badge status-running"><span class="status-text">Preparing…</span></span>' +
+        '</div>' +
+
+        '<div class="pipeline-stages">' +
+            '<span class="stage" data-stage="upload"><span class="dot"></span> Upload</span>' +
+            '<span class="stage-arrow">→</span>' +
+            '<span class="stage" data-stage="segment"><span class="dot"></span> Segmentation</span>' +
+            '<span class="stage-arrow">→</span>' +
+            '<span class="stage" data-stage="rim"><span class="dot"></span> Rim Extraction</span>' +
+        '</div>' +
+
+        '<div class="image-grid">' +
+            '<div class="image-cell">' +
+                '<h4>Original</h4>' +
+                '<img class="img-original result-img" alt="Original" style="display:none">' +
+                '<div class="img-placeholder">Loading…</div>' +
+            '</div>' +
+            '<div class="image-cell">' +
+                '<h4>Segmented Vessel</h4>' +
+                '<img class="img-segmented result-img" alt="Segmented" style="display:none">' +
+                '<div class="img-placeholder">Waiting…</div>' +
+            '</div>' +
+            '<div class="image-cell">' +
+                '<h4>Outer Rim</h4>' +
+                '<img class="img-rim result-img" alt="Rim" style="display:none">' +
+                '<div class="img-placeholder">Waiting…</div>' +
+            '</div>' +
+        '</div>' +
+
+        '<div class="timings"></div>' +
+        '<div class="error-message" style="display:none"></div>';
+    }
+
+    // ───────── Helpers ─────────
+    function setStage(container, stageName, state) {
+        var el = container.querySelector('[data-stage="' + stageName + '"]');
+        if (!el) return;
+        el.classList.remove("active", "done", "error");
+        el.classList.add(state);
+    }
+
+    function setStatus(el, text, state) {
+        el.textContent = text;
+        var badge = el.parentElement;
+        badge.classList.remove("status-running", "status-done", "status-error");
+        badge.classList.add("status-" + state);
+    }
+
+    function showWarning(el, msg) {
+        el.textContent = "\u26A0 " + msg;
+        el.classList.add("warning");
+        el.style.display = "block";
+    }
+
+    function escapeHtml(str) {
+        var div = document.createElement("div");
+        div.textContent = str;
+        return div.innerHTML;
+    }
+
+    function truncate(str, n) {
+        return str.length > n ? str.substring(0, n - 1) + "\u2026" : str;
+    }
+})();
+</script>
+
+</body>
+</html>

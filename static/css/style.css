@@ -1,0 +1,383 @@
+/* =============================================================
+   Vessel Segmentation & Rim Detection – Application Stylesheet
+   =============================================================
+   Clean, modern, responsive UI built without heavy frameworks.
+   Uses CSS custom properties for easy theming.
+   ============================================================= */
+
+/* ── Reset & Variables ──────────────────────────────────── */
+*, *::before, *::after {
+    box-sizing: border-box;
+    margin: 0;
+    padding: 0;
+}
+
+:root {
+    --color-bg:          #f5f7fa;
+    --color-surface:     #ffffff;
+    --color-primary:     #4f46e5;
+    --color-primary-light: #6366f1;
+    --color-primary-bg:  #eef2ff;
+    --color-success:     #16a34a;
+    --color-success-bg:  #f0fdf4;
+    --color-error:       #dc2626;
+    --color-error-bg:    #fef2f2;
+    --color-warning:     #ca8a04;
+    --color-warning-bg:  #fefce8;
+    --color-text:        #1e293b;
+    --color-text-muted:  #64748b;
+    --color-border:      #e2e8f0;
+    --radius:            12px;
+    --radius-sm:         8px;
+    --shadow:            0 1px 3px rgba(0,0,0,.08), 0 1px 2px rgba(0,0,0,.06);
+    --shadow-lg:         0 10px 15px -3px rgba(0,0,0,.08), 0 4px 6px rgba(0,0,0,.04);
+    --transition:        .2s ease;
+    --font:              'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+}
+
+body {
+    font-family: var(--font);
+    background: var(--color-bg);
+    color: var(--color-text);
+    line-height: 1.6;
+    min-height: 100vh;
+    display: flex;
+    flex-direction: column;
+}
+
+.container {
+    max-width: 1200px;
+    margin: 0 auto;
+    padding: 0 24px;
+}
+
+/* ── Header ─────────────────────────────────────────────── */
+.app-header {
+    background: linear-gradient(135deg, var(--color-primary), var(--color-primary-light));
+    color: #fff;
+    padding: 40px 0 36px;
+    text-align: center;
+}
+
+.app-header h1 {
+    font-size: 2rem;
+    font-weight: 700;
+    letter-spacing: -0.025em;
+}
+
+.app-header .subtitle {
+    margin-top: 8px;
+    font-size: 1rem;
+    opacity: .85;
+    font-weight: 400;
+}
+
+/* ── Alerts ─────────────────────────────────────────────── */
+.alert {
+    padding: 14px 20px;
+    border-radius: var(--radius-sm);
+    margin: 24px 0 0;
+    font-size: .925rem;
+    font-weight: 500;
+}
+
+.alert code {
+    background: rgba(0,0,0,.06);
+    padding: 2px 6px;
+    border-radius: 4px;
+    font-size: .85em;
+}
+
+.alert-success {
+    background: var(--color-success-bg);
+    color: var(--color-success);
+    border: 1px solid #bbf7d0;
+}
+
+.alert-error {
+    background: var(--color-error-bg);
+    color: var(--color-error);
+    border: 1px solid #fecaca;
+}
+
+/* ── Upload Section ─────────────────────────────────────── */
+.upload-section {
+    margin: 28px 0 36px;
+}
+
+.upload-box {
+    border: 2px dashed var(--color-border);
+    border-radius: var(--radius);
+    padding: 48px 24px;
+    text-align: center;
+    background: var(--color-surface);
+    cursor: pointer;
+    transition: border-color var(--transition), background var(--transition);
+}
+
+.upload-box:hover,
+.upload-box.dragover {
+    border-color: var(--color-primary);
+    background: var(--color-primary-bg);
+}
+
+.upload-icon {
+    font-size: 3rem;
+    margin-bottom: 12px;
+}
+
+.upload-box h3 {
+    font-size: 1.15rem;
+    font-weight: 600;
+    color: var(--color-text);
+    margin-bottom: 6px;
+}
+
+.upload-box p {
+    font-size: .875rem;
+    color: var(--color-text-muted);
+    margin-bottom: 18px;
+}
+
+/* ── Buttons ────────────────────────────────────────────── */
+.btn {
+    display: inline-block;
+    padding: 10px 24px;
+    border: none;
+    border-radius: var(--radius-sm);
+    font-size: .925rem;
+    font-weight: 600;
+    cursor: pointer;
+    transition: background var(--transition), transform .1s ease;
+    font-family: var(--font);
+}
+
+.btn:active { transform: scale(.97); }
+
+.btn-primary {
+    background: var(--color-primary);
+    color: #fff;
+}
+
+.btn-primary:hover {
+    background: var(--color-primary-light);
+}
+
+/* ── Result Cards ───────────────────────────────────────── */
+.result-card {
+    background: var(--color-surface);
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius);
+    padding: 24px;
+    margin-bottom: 28px;
+    box-shadow: var(--shadow);
+    animation: fadeSlideIn .35s ease;
+}
+
+@keyframes fadeSlideIn {
+    from { opacity: 0; transform: translateY(12px); }
+    to   { opacity: 1; transform: translateY(0); }
+}
+
+.card-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 16px;
+    flex-wrap: wrap;
+    gap: 8px;
+}
+
+.card-title {
+    font-size: 1.05rem;
+    font-weight: 600;
+    color: var(--color-text);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    max-width: 70%;
+}
+
+/* ── Status Badge ───────────────────────────────────────── */
+.status-badge {
+    display: inline-flex;
+    align-items: center;
+    padding: 4px 14px;
+    border-radius: 999px;
+    font-size: .8rem;
+    font-weight: 600;
+    letter-spacing: .02em;
+}
+
+.status-running {
+    background: #dbeafe;
+    color: #2563eb;
+}
+
+.status-done {
+    background: var(--color-success-bg);
+    color: var(--color-success);
+}
+
+.status-error {
+    background: var(--color-error-bg);
+    color: var(--color-error);
+}
+
+/* ── Pipeline Stages ────────────────────────────────────── */
+.pipeline-stages {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-bottom: 20px;
+    flex-wrap: wrap;
+    font-size: .85rem;
+    font-weight: 500;
+    color: var(--color-text-muted);
+}
+
+.stage {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    padding: 4px 10px;
+    border-radius: 6px;
+    background: #f1f5f9;
+    transition: background var(--transition), color var(--transition);
+}
+
+.stage .dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: #cbd5e1;
+    transition: background var(--transition);
+}
+
+.stage.active { background: #dbeafe; color: #2563eb; }
+.stage.active .dot { background: #2563eb; animation: pulse 1s infinite; }
+
+.stage.done { background: var(--color-success-bg); color: var(--color-success); }
+.stage.done .dot { background: var(--color-success); }
+
+.stage.error { background: var(--color-error-bg); color: var(--color-error); }
+.stage.error .dot { background: var(--color-error); }
+
+.stage-arrow {
+    color: #cbd5e1;
+    font-weight: 700;
+}
+
+@keyframes pulse {
+    0%, 100% { opacity: 1; }
+    50%      { opacity: .4; }
+}
+
+/* ── Image Grid ─────────────────────────────────────────── */
+.image-grid {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 20px;
+    margin-bottom: 20px;
+}
+
+@media (max-width: 900px) {
+    .image-grid { grid-template-columns: 1fr; }
+}
+
+.image-cell {
+    text-align: center;
+}
+
+.image-cell h4 {
+    font-size: .9rem;
+    font-weight: 600;
+    color: var(--color-text-muted);
+    margin-bottom: 10px;
+    text-transform: uppercase;
+    letter-spacing: .04em;
+}
+
+.result-img {
+    width: 100%;
+    border-radius: var(--radius-sm);
+    border: 1px solid var(--color-border);
+    object-fit: contain;
+    max-height: 400px;
+    background: #f8fafc;
+}
+
+.img-placeholder {
+    height: 200px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    border: 1px dashed var(--color-border);
+    border-radius: var(--radius-sm);
+    color: var(--color-text-muted);
+    font-size: .85rem;
+    background: #f8fafc;
+}
+
+/* ── Timings ────────────────────────────────────────────── */
+.timings {
+    background: #f8fafc;
+    border-radius: var(--radius-sm);
+    padding: 16px 20px;
+    margin-top: 4px;
+}
+
+.timing-row {
+    display: flex;
+    justify-content: space-between;
+    padding: 6px 0;
+    font-size: .9rem;
+}
+
+.timing-row + .timing-row {
+    border-top: 1px solid var(--color-border);
+}
+
+.timing-label {
+    font-weight: 500;
+    color: var(--color-text-muted);
+}
+
+.timing-value {
+    font-weight: 600;
+    font-variant-numeric: tabular-nums;
+    color: var(--color-text);
+}
+
+.timing-total .timing-label,
+.timing-total .timing-value {
+    color: var(--color-primary);
+}
+
+/* ── Error / Warning Messages ───────────────────────────── */
+.error-message {
+    margin-top: 14px;
+    padding: 12px 18px;
+    border-radius: var(--radius-sm);
+    font-size: .9rem;
+    font-weight: 500;
+    background: var(--color-error-bg);
+    color: var(--color-error);
+    border: 1px solid #fecaca;
+}
+
+.error-message.warning {
+    background: var(--color-warning-bg);
+    color: var(--color-warning);
+    border-color: #fef08a;
+}
+
+/* ── Footer ─────────────────────────────────────────────── */
+.app-footer {
+    margin-top: auto;
+    padding: 28px 0;
+    text-align: center;
+    font-size: .825rem;
+    color: var(--color-text-muted);
+    border-top: 1px solid var(--color-border);
+}
