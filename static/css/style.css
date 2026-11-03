@@ -163,6 +163,29 @@ body {
     background: var(--color-primary-light);
 }
 
+.btn-secondary {
+    background: #e2e8f0;
+    color: var(--color-text);
+}
+
+.btn-secondary:hover {
+    background: #cbd5e1;
+}
+
+.download-row {
+    margin-top: 14px;
+    display: flex;
+    gap: 10px;
+    justify-content: center;
+    flex-wrap: wrap;
+}
+
+.download-btn {
+    text-decoration: none;
+    font-size: .85rem;
+    padding: 9px 18px;
+}
+
 /* ── Result Cards ───────────────────────────────────────── */
 .result-card {
     background: var(--color-surface);
@@ -273,42 +296,128 @@ body {
     50%      { opacity: .4; }
 }
 
-/* ── Image Grid ─────────────────────────────────────────── */
-.image-grid {
-    display: grid;
-    grid-template-columns: repeat(3, 1fr);
-    gap: 20px;
-    margin-bottom: 20px;
+/* ── Output Sections (vertical flow) ────────────────────── */
+.output-section {
+    margin-bottom: 8px;
 }
 
-@media (max-width: 900px) {
-    .image-grid { grid-template-columns: 1fr; }
+.output-label {
+    font-size: 1rem;
+    font-weight: 700;
+    color: var(--color-text);
+    margin-bottom: 10px;
+    padding-left: 2px;
 }
 
-.image-cell {
+.output-image-wrap {
     text-align: center;
 }
 
-.image-cell h4 {
-    font-size: .9rem;
-    font-weight: 600;
-    color: var(--color-text-muted);
-    margin-bottom: 10px;
-    text-transform: uppercase;
-    letter-spacing: .04em;
+.flow-arrow {
+    text-align: center;
+    font-size: 1.5rem;
+    color: var(--color-primary);
+    font-weight: 700;
+    padding: 6px 0;
+    user-select: none;
 }
 
+/* ── Rim Grid (two outputs side-by-side) ────────────────── */
+.rim-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 20px;
+}
+
+@media (max-width: 700px) {
+    .rim-grid { grid-template-columns: 1fr; }
+}
+
+.rim-cell {
+    text-align: center;
+}
+
+.rim-cell-label {
+    font-size: .85rem;
+    font-weight: 600;
+    color: var(--color-text-muted);
+    margin-bottom: 8px;
+    text-transform: uppercase;
+    letter-spacing: .03em;
+}
+
+/* ── Side-by-side comparison ────────────────────────────── */
+.compare-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 20px;
+}
+
+@media (max-width: 700px) {
+    .compare-grid { grid-template-columns: 1fr; }
+}
+
+.compare-cell {
+    text-align: center;
+}
+
+.compare-label {
+    font-size: .85rem;
+    font-weight: 600;
+    color: var(--color-text-muted);
+    margin-bottom: 8px;
+    text-transform: uppercase;
+    letter-spacing: .03em;
+}
+
+.compare-cell .result-img {
+    max-width: 100%;
+}
+
+/* ── Inline Timing (shown under each section) ──────────── */
+.inline-timing {
+    text-align: center;
+    margin-top: 8px;
+    font-size: .825rem;
+    font-weight: 600;
+    color: var(--color-primary);
+    background: var(--color-primary-bg);
+    padding: 5px 14px;
+    border-radius: 999px;
+    display: inline-block;
+}
+
+/* centre the inline-timing inside its parent */
+.output-section {
+    text-align: center;
+}
+.output-section .output-label {
+    text-align: left;
+}
+
+/* ── Result Images ──────────────────────────────────────── */
 .result-img {
     width: 100%;
+    max-width: 560px;
     border-radius: var(--radius-sm);
     border: 1px solid var(--color-border);
     object-fit: contain;
-    max-height: 400px;
+    max-height: 420px;
     background: #f8fafc;
 }
 
+.rim-cell .result-img {
+    max-width: 100%;
+}
+
+.result-img-rim {
+    background: #ffffff;
+}
+
 .img-placeholder {
-    height: 200px;
+    height: 180px;
+    max-width: 560px;
+    margin: 0 auto;
     display: flex;
     align-items: center;
     justify-content: center;
@@ -317,6 +426,10 @@ body {
     color: var(--color-text-muted);
     font-size: .85rem;
     background: #f8fafc;
+}
+
+.rim-cell .img-placeholder {
+    max-width: 100%;
 }
 
 /* ── Timings ────────────────────────────────────────────── */

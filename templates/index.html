@@ -57,133 +57,204 @@
 (function () {
     "use strict";
 
-    const dropZone         = document.getElementById("dropZone");
-    const fileInput        = document.getElementById("fileInput");
-    const browseBtn        = document.getElementById("browseBtn");
-    const resultsContainer = document.getElementById("resultsContainer");
+    var dropZone         = document.getElementById("dropZone");
+    var fileInput        = document.getElementById("fileInput");
+    var browseBtn        = document.getElementById("browseBtn");
+    var resultsContainer = document.getElementById("resultsContainer");
 
     // ───────── Browse button ─────────
-    browseBtn.addEventListener("click", (e) => {
+    browseBtn.addEventListener("click", function (e) {
         e.stopPropagation();
         fileInput.click();
     });
-    dropZone.addEventListener("click", () => fileInput.click());
+    dropZone.addEventListener("click", function () { fileInput.click(); });
 
     // ───────── Drag & drop ─────────
-    ["dragenter", "dragover"].forEach((evt) =>
-        dropZone.addEventListener(evt, (e) => { e.preventDefault(); dropZone.classList.add("dragover"); })
-    );
-    ["dragleave", "drop"].forEach((evt) =>
-        dropZone.addEventListener(evt, (e) => { e.preventDefault(); dropZone.classList.remove("dragover"); })
-    );
-    dropZone.addEventListener("drop", (e) => handleFiles(e.dataTransfer.files));
-
-    fileInput.addEventListener("change", () => handleFiles(fileInput.files));
+    ["dragenter", "dragover"].forEach(function (evt) {
+        dropZone.addEventListener(evt, function (e) { e.preventDefault(); dropZone.classList.add("dragover"); });
+    });
+    ["dragleave", "drop"].forEach(function (evt) {
+        dropZone.addEventListener(evt, function (e) { e.preventDefault(); dropZone.classList.remove("dragover"); });
+    });
+    dropZone.addEventListener("drop", function (e) { handleFiles(e.dataTransfer.files); });
+    fileInput.addEventListener("change", function () { handleFiles(fileInput.files); });
 
     // ───────── Process each file independently ─────────
     function handleFiles(fileList) {
         if (!fileList || fileList.length === 0) return;
-        Array.from(fileList).forEach((file) => processFile(file));
+        for (var i = 0; i < fileList.length; i++) {
+            processFile(fileList[i]);
+        }
         fileInput.value = "";
     }
 
     function processFile(file) {
-        const allowed = ["image/png","image/jpeg","image/bmp","image/tiff","image/webp"];
-        if (!allowed.includes(file.type)) {
+        var allowed = ["image/png","image/jpeg","image/bmp","image/tiff","image/webp"];
+        if (allowed.indexOf(file.type) === -1) {
             alert("Unsupported file type: " + file.type);
             return;
         }
 
         // ── Create result card ──
-        const card = document.createElement("div");
+        var card = document.createElement("div");
         card.className = "result-card";
         card.innerHTML = buildCardSkeleton(file.name);
         resultsContainer.prepend(card);
 
-        const statusEl   = card.querySelector(".status-text");
-        const stagesEl   = card.querySelector(".pipeline-stages");
-        const originalEl = card.querySelector(".img-original");
-        const segEl      = card.querySelector(".img-segmented");
-        const rimEl      = card.querySelector(".img-rim");
-        const timingsEl  = card.querySelector(".timings");
-        const errorEl    = card.querySelector(".error-message");
+        var statusEl         = card.querySelector(".status-text");
+        var stagesEl         = card.querySelector(".pipeline-stages");
+        var originalImg      = card.querySelector(".img-original");
+        var segImg           = card.querySelector(".img-segmented");
+        var rimImg           = card.querySelector(".img-rim");
+        var compareOriginal  = card.querySelector(".img-original-compare");
+        var compareRim       = card.querySelector(".img-rim-compare");
+        var segTimingEl      = card.querySelector(".seg-timing");
+        var rimTimingEl      = card.querySelector(".rim-timing");
+        var totalTimingEl    = card.querySelector(".total-timing");
+        var rimDownloadEl    = card.querySelector(".download-rim-image");
+        var rimTransparentEl = card.querySelector(".download-rim-transparent");
+        var rimMaskEl        = card.querySelector(".download-rim-mask");
+        var errorEl          = card.querySelector(".error-message");
 
-        // Show original preview immediately
-        const reader = new FileReader();
-        reader.onload = (e) => {
-            originalEl.src = e.target.result;
-            originalEl.style.display = "block";
-            card.querySelector(".image-cell:first-child .img-placeholder").style.display = "none";
+        // Show original preview immediately via FileReader
+        var reader = new FileReader();
+        reader.onload = function (e) {
+            originalImg.src = e.target.result;
+            originalImg.style.display = "block";
+            compareOriginal.src = e.target.result;
+            compareOriginal.style.display = "block";
+            hideEl(card.querySelector(".ph-original"));
         };
         reader.readAsDataURL(file);
 
         setStage(stagesEl, "upload", "active");
-        setStatus(statusEl, "Uploading…", "running");
+        setStatus(statusEl, "Uploading\u2026", "running");
 
-        // ── Upload via fetch ──
-        const formData = new FormData();
+        // ── Upload + segmentation ──
+        var formData = new FormData();
         formData.append("file", file);
 
         setStage(stagesEl, "upload", "done");
         setStage(stagesEl, "segment", "active");
-        setStatus(statusEl, "Running Segmentation…", "running");
+        setStatus(statusEl, "Running Segmentation\u2026", "running");
+
+        var segTime = 0;
+        var confidence = null;
+        var hasDetections = true;
 
         fetch("/process", { method: "POST", body: formData })
-            .then((res) => res.json())
-            .then((data) => {
+            .then(function (res) { return res.json(); })
+            .then(function (data) {
                 if (!data.success) {
                     throw new Error(data.error || "Unknown server error");
                 }
 
-                // Segmentation done
+                // ── Result 1: Vessel Segmentation (shown immediately) ──
+                segTime = data.timings.segmentation;
+                confidence = data.confidence;
+                hasDetections = !!data.has_detections;
+
                 setStage(stagesEl, "segment", "done");
-                segEl.src = data.segmented_url;
-                segEl.style.display = "block";
-                card.querySelector(".image-cell:nth-child(2) .img-placeholder").style.display = "none";
+                segImg.src = data.segmented_url;
+                segImg.style.display = "block";
+                hideEl(card.querySelector(".ph-segmented"));
+                segTimingEl.textContent = "Processing time: " + segTime.toFixed(2) + " sec";
+                segTimingEl.style.display = "inline-block";
 
-                // Rim done
-                setStage(stagesEl, "rim", "active");
-                setStatus(statusEl, "Extracting Rim…", "running");
+                if (!data.has_detections) {
+                    showWarning(errorEl, "No vessel detected in this image.");
+                }
 
-                setTimeout(() => {
-                    setStage(stagesEl, "rim", "done");
-                    rimEl.src = data.rim_url;
-                    rimEl.style.display = "block";
-                    card.querySelector(".image-cell:nth-child(3) .img-placeholder").style.display = "none";
+                // ── Start Result 2: Outer Rim Extraction ──
+                // Small delay so the segmentation image is painted first.
+                return new Promise(function (resolve, reject) {
+                    setTimeout(function () {
+                        setStage(stagesEl, "rim", "active");
+                        setStatus(statusEl, "Extracting Outer Rim\u2026", "running");
 
-                    // Timings
-                    timingsEl.innerHTML =
-                        '<div class="timing-row">' +
-                            '<span class="timing-label">Segmentation</span>' +
-                            '<span class="timing-value">' + data.timings.segmentation.toFixed(2) + ' sec</span>' +
-                        '</div>' +
-                        '<div class="timing-row">' +
-                            '<span class="timing-label">Rim Extraction</span>' +
-                            '<span class="timing-value">' + data.timings.rim_extraction.toFixed(4) + ' sec</span>' +
-                        '</div>' +
-                        '<div class="timing-row timing-total">' +
-                            '<span class="timing-label">Total</span>' +
-                            '<span class="timing-value">' + data.timings.total.toFixed(2) + ' sec</span>' +
-                        '</div>';
-
-                    if (data.confidence !== null) {
-                        timingsEl.innerHTML +=
-                            '<div class="timing-row">' +
-                                '<span class="timing-label">Confidence</span>' +
-                                '<span class="timing-value">' + (data.confidence * 100).toFixed(1) + '%</span>' +
-                            '</div>';
-                    }
-
-                    if (!data.has_detections) {
-                        showWarning(errorEl, "No vessel detected in this image.");
-                    } else if (!data.has_rim) {
-                        showWarning(errorEl, "Vessel detected but rim extraction found no outer contour.");
-                    }
-
-                    setStatus(statusEl, "Completed", "done");
-                }, 300);
+                        fetch("/extract-rim", {
+                            method: "POST",
+                            headers: { "Content-Type": "application/json" },
+                            body: JSON.stringify({
+                                mask_filename: data.mask_filename,
+                                original_filename: data.original_filename
+                            })
+                        }).then(resolve).catch(reject);
+                    }, 200);
+                });
             })
-            .catch((err) => {
+            .then(function (res) { return res.json(); })
+            .then(function (rimData) {
+                if (!rimData.success) {
+                    throw new Error(rimData.error || "Rim extraction failed");
+                }
+
+                var rimTime = rimData.timings.rim_extraction;
+                var totalTime = segTime + rimTime;
+
+                setStage(stagesEl, "rim", "done");
+
+                // ── Result 2: Outer Rim (actual rim pixels on white) ──
+                rimTimingEl.textContent = "Processing time: " + rimTime.toFixed(4) + " sec";
+                rimTimingEl.style.display = "inline-block";
+
+                if (rimData.has_rim) {
+                    rimImg.src = rimData.rim_url;
+                    rimImg.style.display = "block";
+                    compareRim.src = rimData.rim_url;
+                    compareRim.style.display = "block";
+                    hideEl(card.querySelector(".ph-rim"));
+
+                    // Download links (actual rim image, transparent PNG, B&W mask)
+                    rimDownloadEl.href = rimData.rim_url;
+                    rimDownloadEl.download = "vessel_rim.png";
+                    rimDownloadEl.style.display = "inline-block";
+                    rimTransparentEl.href = rimData.rim_transparent_url;
+                    rimTransparentEl.download = "vessel_rim_transparent.png";
+                    rimTransparentEl.style.display = "inline-block";
+                    rimMaskEl.href = rimData.rim_mask_url;
+                    rimMaskEl.download = "vessel_rim_mask.png";
+                    rimMaskEl.style.display = "inline-block";
+                } else {
+                    var rimPlaceholder = card.querySelector(".ph-rim");
+                    if (rimPlaceholder) {
+                        rimPlaceholder.textContent = hasDetections
+                            ? "No outer rim found"
+                            : "No vessel detected";
+                    }
+                }
+
+                // ── Total processing time ──
+                totalTimingEl.innerHTML =
+                    '<div class="timing-row">' +
+                        '<span class="timing-label">Segmentation</span>' +
+                        '<span class="timing-value">' + segTime.toFixed(2) + ' sec</span>' +
+                    '</div>' +
+                    '<div class="timing-row">' +
+                        '<span class="timing-label">Outer Rim Extraction</span>' +
+                        '<span class="timing-value">' + rimTime.toFixed(4) + ' sec</span>' +
+                    '</div>' +
+                    '<div class="timing-row timing-total">' +
+                        '<span class="timing-label">Total processing time</span>' +
+                        '<span class="timing-value">' + totalTime.toFixed(2) + ' sec</span>' +
+                    '</div>';
+
+                if (confidence !== null && confidence !== undefined) {
+                    totalTimingEl.innerHTML +=
+                        '<div class="timing-row">' +
+                            '<span class="timing-label">Confidence</span>' +
+                            '<span class="timing-value">' + (confidence * 100).toFixed(1) + '%</span>' +
+                        '</div>';
+                }
+
+                // ── Warnings ──
+                if (!rimData.has_rim && hasDetections) {
+                    showWarning(errorEl, "Vessel detected but no outer rim could be extracted.");
+                }
+
+                setStatus(statusEl, "Completed", "done");
+            })
+            .catch(function (err) {
                 setStatus(statusEl, "Failed", "error");
                 errorEl.textContent = err.message;
                 errorEl.style.display = "block";
@@ -193,44 +264,84 @@
     // ───────── Card HTML skeleton ─────────
     function buildCardSkeleton(filename) {
         return '' +
+        /* Header */
         '<div class="card-header">' +
-            '<h3 class="card-title" title="' + escapeHtml(filename) + '">' + escapeHtml(truncate(filename, 40)) + '</h3>' +
-            '<span class="status-badge status-running"><span class="status-text">Preparing…</span></span>' +
+            '<h3 class="card-title" title="' + esc(filename) + '">' + esc(trunc(filename, 50)) + '</h3>' +
+            '<span class="status-badge status-running"><span class="status-text">Preparing\u2026</span></span>' +
         '</div>' +
 
+        /* Pipeline stages */
         '<div class="pipeline-stages">' +
             '<span class="stage" data-stage="upload"><span class="dot"></span> Upload</span>' +
-            '<span class="stage-arrow">→</span>' +
+            '<span class="stage-arrow">\u2192</span>' +
             '<span class="stage" data-stage="segment"><span class="dot"></span> Segmentation</span>' +
-            '<span class="stage-arrow">→</span>' +
+            '<span class="stage-arrow">\u2192</span>' +
             '<span class="stage" data-stage="rim"><span class="dot"></span> Rim Extraction</span>' +
         '</div>' +
 
-        '<div class="image-grid">' +
-            '<div class="image-cell">' +
-                '<h4>Original</h4>' +
+        /* ── Uploaded image ── */
+        '<div class="output-section">' +
+            '<div class="output-label">Uploaded Image</div>' +
+            '<div class="output-image-wrap">' +
                 '<img class="img-original result-img" alt="Original" style="display:none">' +
-                '<div class="img-placeholder">Loading…</div>' +
-            '</div>' +
-            '<div class="image-cell">' +
-                '<h4>Segmented Vessel</h4>' +
-                '<img class="img-segmented result-img" alt="Segmented" style="display:none">' +
-                '<div class="img-placeholder">Waiting…</div>' +
-            '</div>' +
-            '<div class="image-cell">' +
-                '<h4>Outer Rim</h4>' +
-                '<img class="img-rim result-img" alt="Rim" style="display:none">' +
-                '<div class="img-placeholder">Waiting…</div>' +
+                '<div class="img-placeholder ph-original">Loading\u2026</div>' +
             '</div>' +
         '</div>' +
 
-        '<div class="timings"></div>' +
+        '<div class="flow-arrow">\u2193</div>' +
+
+        /* ── Result 1: Vessel segmentation ── */
+        '<div class="output-section">' +
+            '<div class="output-label">Vessel Segmentation Result</div>' +
+            '<div class="output-image-wrap">' +
+                '<img class="img-segmented result-img" alt="Vessel Segmentation" style="display:none">' +
+                '<div class="img-placeholder ph-segmented">Waiting for segmentation\u2026</div>' +
+            '</div>' +
+            '<div class="inline-timing seg-timing" style="display:none"></div>' +
+        '</div>' +
+
+        '<div class="flow-arrow">\u2193</div>' +
+
+        /* ── Result 2: Outer rim ── */
+        '<div class="output-section">' +
+            '<div class="output-label">Outer Rim Extraction Result (Actual Image)</div>' +
+            '<div class="output-image-wrap">' +
+                '<img class="img-rim result-img result-img-rim" alt="Actual Outer Rim" style="display:none">' +
+                '<div class="img-placeholder ph-rim">Waiting for rim\u2026</div>' +
+            '</div>' +
+            '<div class="inline-timing rim-timing" style="display:none"></div>' +
+            '<div class="download-row">' +
+                '<a class="btn btn-primary download-btn download-rim-image" style="display:none">Download Rim Image (PNG)</a>' +
+                '<a class="btn btn-secondary download-btn download-rim-transparent" style="display:none">Download Transparent PNG</a>' +
+                '<a class="btn btn-secondary download-btn download-rim-mask" style="display:none">Download B&amp;W Mask (PNG)</a>' +
+            '</div>' +
+        '</div>' +
+
+        /* ── Side-by-side comparison ── */
+        '<div class="output-section">' +
+            '<div class="output-label">Side-by-Side Comparison</div>' +
+            '<div class="compare-grid">' +
+                '<div class="compare-cell">' +
+                    '<div class="compare-label">Original</div>' +
+                    '<img class="img-original-compare result-img" alt="Original" style="display:none">' +
+                '</div>' +
+                '<div class="compare-cell">' +
+                    '<div class="compare-label">Outer Rim</div>' +
+                    '<img class="img-rim-compare result-img result-img-rim" alt="Outer Rim" style="display:none">' +
+                '</div>' +
+            '</div>' +
+        '</div>' +
+
+        /* Timings summary */
+        '<div class="timings total-timing"></div>' +
+
+        /* Error / warning */
         '<div class="error-message" style="display:none"></div>';
     }
 
     // ───────── Helpers ─────────
-    function setStage(container, stageName, state) {
-        var el = container.querySelector('[data-stage="' + stageName + '"]');
+    function setStage(container, name, state) {
+        var el = container.querySelector('[data-stage="' + name + '"]');
         if (!el) return;
         el.classList.remove("active", "done", "error");
         el.classList.add(state);
@@ -249,13 +360,15 @@
         el.style.display = "block";
     }
 
-    function escapeHtml(str) {
-        var div = document.createElement("div");
-        div.textContent = str;
-        return div.innerHTML;
+    function hideEl(el) { if (el) el.style.display = "none"; }
+
+    function esc(str) {
+        var d = document.createElement("div");
+        d.textContent = str;
+        return d.innerHTML;
     }
 
-    function truncate(str, n) {
+    function trunc(str, n) {
         return str.length > n ? str.substring(0, n - 1) + "\u2026" : str;
     }
 })();

@@ -5,7 +5,10 @@ AI-Based Vessel Segmentation and Rim Detection System
 Main Flask application entry point.
 
 - Loads the YOLO segmentation model **once** at startup.
-- Exposes routes for uploading images and processing them.
+- `/process` runs segmentation and returns the segmentation result
+  immediately (so the UI can display it right after prediction).
+- `/extract-rim` runs the OpenCV outer-rim pipeline on the mask saved
+  by `/process`.
 - Returns JSON results so the frontend can update progressively.
 
 Architecture Notes:
@@ -104,8 +107,11 @@ def index():
 @app.route("/process", methods=["POST"])
 def process_image():
     """
-    Accept an uploaded image, run segmentation + rim extraction,
-    and return paths + timings as JSON.
+    Accept an uploaded image, run YOLO segmentation, and return the
+    segmentation result immediately.
+
+    The saved mask filename is also returned so the frontend can call
+    `/extract-rim` as the next step.
 
     Expected form field: ``file`` (multipart file upload).
     """
@@ -132,60 +138,126 @@ def process_image():
 
     # ── Save uploaded file ────────────────────────────────
     safe_name = _unique_filename(file.filename)
+    stem = os.path.splitext(safe_name)[0]
     upload_path = os.path.join(UPLOAD_FOLDER, safe_name)
     file.save(upload_path)
     logger.info("Saved upload → %s", upload_path)
 
     try:
-        # ── 1. Segmentation ──────────────────────────────
+        # ── 1. Segmentation (shown immediately in the UI) ──
         seg_result = run_segmentation(yolo_model, upload_path)
 
-        seg_filename = f"seg_{safe_name}"
+        seg_filename = f"seg_{stem}.png"
         seg_path = os.path.join(OUTPUT_FOLDER, seg_filename)
         cv2.imwrite(seg_path, seg_result["segmented_image"])
 
-        # ── 2. Rim extraction ────────────────────────────
-        original_image = cv2.imread(upload_path)
-        rim_result = extract_rim(
-            mask=seg_result["mask"],
-            original_image=original_image,
-        )
-
-        rim_filename = f"rim_{safe_name}"
-        rim_path = os.path.join(OUTPUT_FOLDER, rim_filename)
-        cv2.imwrite(rim_path, rim_result["rim_image"])
-
-        # Also save the rim-on-black version
-        rim_black_filename = f"rim_black_{safe_name}"
-        rim_black_path = os.path.join(OUTPUT_FOLDER, rim_black_filename)
-        cv2.imwrite(rim_black_path, rim_result["rim_on_black"])
-
-        # ── 3. Compute totals ────────────────────────────
-        total_time = seg_result["time"] + rim_result["time"]
+        # Persist the raw mask so /extract-rim can reuse it without
+        # running the model a second time.
+        mask_filename = f"mask_{stem}.png"
+        mask_path = os.path.join(OUTPUT_FOLDER, mask_filename)
+        cv2.imwrite(mask_path, seg_result["mask"])
 
         return jsonify({
             "success": True,
             "original_url": url_for("static", filename=f"uploads/{safe_name}"),
             "segmented_url": url_for("static", filename=f"outputs/{seg_filename}"),
-            "rim_url": url_for("static", filename=f"outputs/{rim_filename}"),
-            "rim_black_url": url_for("static", filename=f"outputs/{rim_black_filename}"),
+            "mask_filename": mask_filename,
+            "original_filename": safe_name,
             "has_detections": seg_result["has_detections"],
-            "has_rim": rim_result["has_rim"],
             "confidence": seg_result["confidence"],
             "timings": {
                 "segmentation": round(seg_result["time"], 4),
-                "rim_extraction": round(rim_result["time"], 4),
-                "total": round(total_time, 4),
             },
         })
 
     except ValueError as e:
-        logger.exception("Validation error during processing.")
+        logger.exception("Validation error during segmentation.")
         return jsonify({"success": False, "error": str(e)}), 400
 
     except Exception as e:
-        logger.exception("Unexpected error during processing.")
+        logger.exception("Unexpected error during segmentation.")
         return jsonify({"success": False, "error": f"Processing failed: {e}"}), 500
+
+
+@app.route("/extract-rim", methods=["POST"])
+def extract_rim_image():
+    """
+    Run the OpenCV outer-rim pipeline on a mask produced by `/process`.
+
+    Expected JSON body:
+        {
+            "mask_filename": "mask_<id>.png",
+            "original_filename": "<id>.png"
+        }
+    """
+    data = request.get_json(silent=True) or {}
+
+    mask_filename = os.path.basename(str(data.get("mask_filename", "")))
+    original_filename = os.path.basename(str(data.get("original_filename", "")))
+
+    if not mask_filename or not original_filename:
+        return jsonify({
+            "success": False,
+            "error": "Missing mask or original image reference.",
+        }), 400
+
+    mask_path = os.path.join(OUTPUT_FOLDER, mask_filename)
+    original_path = os.path.join(UPLOAD_FOLDER, original_filename)
+
+    if not os.path.isfile(mask_path) or not os.path.isfile(original_path):
+        return jsonify({
+            "success": False,
+            "error": "Source images not found. Please upload the image again.",
+        }), 400
+
+    try:
+        mask = cv2.imread(mask_path, cv2.IMREAD_GRAYSCALE)
+        original_image = cv2.imread(original_path)
+
+        if mask is None or original_image is None:
+            raise ValueError("Could not read segmentation mask or original image.")
+
+        # ── 2. Outer rim extraction ────────────────────────
+        rim_result = extract_rim(
+            mask=mask,
+            original_image=original_image,
+        )
+
+        stem = os.path.splitext(original_filename)[0]
+
+        # Actual rim image: real pixels on a white background (reference style).
+        rim_filename = f"rim_{stem}.png"
+        rim_path = os.path.join(OUTPUT_FOLDER, rim_filename)
+        cv2.imwrite(rim_path, rim_result["rim_photo_white"])
+
+        # Actual rim image with a transparent background.
+        rim_transparent_filename = f"rim_transparent_{stem}.png"
+        rim_transparent_path = os.path.join(OUTPUT_FOLDER, rim_transparent_filename)
+        cv2.imwrite(rim_transparent_path, rim_result["rim_photo_transparent"])
+
+        # Black-and-white binary rim mask (single channel).
+        rim_mask_filename = f"rim_mask_{stem}.png"
+        rim_mask_path = os.path.join(OUTPUT_FOLDER, rim_mask_filename)
+        cv2.imwrite(rim_mask_path, rim_result["rim_mask"])
+
+        return jsonify({
+            "success": True,
+            "rim_url": url_for("static", filename=f"outputs/{rim_filename}"),
+            "rim_transparent_url": url_for("static", filename=f"outputs/{rim_transparent_filename}"),
+            "rim_mask_url": url_for("static", filename=f"outputs/{rim_mask_filename}"),
+            "has_rim": rim_result["has_rim"],
+            "timings": {
+                "rim_extraction": round(rim_result["time"], 4),
+            },
+        })
+
+    except ValueError as e:
+        logger.exception("Validation error during rim extraction.")
+        return jsonify({"success": False, "error": str(e)}), 400
+
+    except Exception as e:
+        logger.exception("Unexpected error during rim extraction.")
+        return jsonify({"success": False, "error": f"Rim extraction failed: {e}"}), 500
 
 
 @app.route("/health")

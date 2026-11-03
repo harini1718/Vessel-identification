@@ -3,27 +3,42 @@ Rim Extraction Module
 =====================
 
 Pure OpenCV-based algorithm that computes the **outer rim** of a
-segmented vessel from its binary segmentation mask.
+segmented vessel.  The rim is derived by subtracting an eroded mask
+from the cleaned vessel mask, yielding only the outermost boundary
+pixels of the vessel.
 
-This module does NOT use the YOLO model output directly as the rim.
-Instead it applies a dedicated image-processing pipeline:
+This module does NOT use the YOLO model to draw the rim.
 
-    1. Binarise the segmentation mask.
-    2. Keep only the largest connected component (the vessel).
-    3. Apply morphological closing to fill small gaps / noise.
-    4. Find the external contour  (cv2.RETR_EXTERNAL).
-    5. Optionally smooth the contour with cv2.approxPolyDP.
-    6. Draw the outer contour at a configurable thickness → rim mask.
-    7. Overlay the rim on the original image for visualisation.
+Pipeline
+--------
+    1.  Binarise the segmentation mask.
+    2.  Remove connected components that touch the image border.
+    3.  Remove small noise regions (food particles / specks).
+    4.  Keep the main vessel contour (largest component).
+    5.  Fill internal holes (food / inner vessel area).
+    6.  Morphological closing so the boundary is continuous.
+    7.  Erode the clean mask with an elliptical kernel.
+    8.  Compute:  rim = clean_mask - eroded_mask.
+    9.  Return the rim as a B&W mask and as the actual rim pixels
+        cropped from the original image.
+
+Kernel-size guide
+-----------------
+    3x3  -> thin rim   (~1-2 px boundary)
+    5x5  -> medium rim (~2-3 px boundary)
+    9x9  -> thick rim  (~4-5 px boundary)
 
 Performance target: < 50 ms per image on CPU.
 
-Functions:
-    extract_rim(mask, original_image, ...) -> dict
+Functions
+---------
+    extract_outer_rim(mask, ...) -> np.ndarray
+    extract_rim(mask, original_image=None, ...) -> dict
 
-Future Extension:
-    The rim contour points returned here can later feed a DINOv2
-    feature extractor for vessel identification.
+Future Extension
+----------------
+    The rim mask returned here can later feed a DINOv2 feature
+    extractor for registered vessel identification.
 """
 
 import logging
@@ -36,204 +51,369 @@ from utils.timer import Timer
 logger = logging.getLogger(__name__)
 
 # ──────────────────────────────────────────────────────────
-# Default parameters (all configurable via function args)
+# Defaults (all overridable via function arguments)
 # ──────────────────────────────────────────────────────────
-DEFAULT_RIM_THICKNESS: int = 3          # pixels (range 2-5 recommended)
-DEFAULT_MORPH_KERNEL_SIZE: int = 15     # kernel size for morphological closing
-DEFAULT_MORPH_ITERATIONS: int = 2       # iterations for closing
-DEFAULT_SMOOTH_EPSILON_RATIO: float = 0.002  # approxPolyDP epsilon as a
-                                              # fraction of contour perimeter
-DEFAULT_RIM_COLOR: tuple = (0, 0, 255)  # BGR – red
+DEFAULT_EROSION_KERNEL_SIZE: int = 0          # 0 = auto (scales with vessel size)
+DEFAULT_CLOSING_KERNEL_SIZE: int = 5          # light smoothing only
+DEFAULT_CLOSING_ITERATIONS: int = 1
+DEFAULT_MIN_COMPONENT_AREA: int = 500         # px² – ignore blobs smaller than this
+DEFAULT_RIM_COLOR: tuple = (255, 255, 255)    # BGR white for the B&W mask
+AUTO_RIM_WIDTH_RATIO: float = 0.06            # band ≈ 3% of vessel diameter
 
 
-def _binarise_mask(mask: np.ndarray) -> np.ndarray:
-    """
-    Convert any mask to a clean binary image (0 or 255).
+# ──────────────────────────────────────────────────────────
+# Internal helpers
+# ──────────────────────────────────────────────────────────
 
-    Handles both float [0..1] and uint8 [0..255] inputs.
-    """
+def _binarise(mask: np.ndarray) -> np.ndarray:
+    """Convert any mask (float or uint8, 1-ch or 3-ch) to binary 0/255."""
+    mask = np.asarray(mask)
+
+    if mask.ndim == 3:
+        if mask.shape[2] == 1:
+            mask = mask[:, :, 0]
+        elif mask.shape[2] == 4:
+            mask = cv2.cvtColor(mask, cv2.COLOR_BGRA2GRAY)
+        else:
+            mask = cv2.cvtColor(mask, cv2.COLOR_BGR2GRAY)
+
     if mask.dtype != np.uint8:
+        if mask.size and float(mask.max()) <= 1.0:
+            mask = (mask * 255).astype(np.uint8)
+        else:
+            mask = mask.astype(np.uint8)
+    elif mask.size and int(mask.max()) <= 1:
         mask = (mask * 255).astype(np.uint8)
-
-    # Ensure single-channel
-    if len(mask.shape) == 3:
-        mask = cv2.cvtColor(mask, cv2.COLOR_BGR2GRAY)
 
     _, binary = cv2.threshold(mask, 127, 255, cv2.THRESH_BINARY)
     return binary
 
 
-def _keep_largest_component(binary: np.ndarray) -> np.ndarray:
+def _remove_border_components(binary: np.ndarray) -> np.ndarray:
     """
-    Keep only the largest connected component in a binary image.
+    Remove any connected component that touches the image border.
 
-    This removes small spurious blobs that are not the vessel.
+    Border-touching blobs are typically partial objects or background
+    artefacts, not the centred vessel.
     """
+    h, w = binary.shape
+
     num_labels, labels, stats, _ = cv2.connectedComponentsWithStats(
         binary, connectivity=8
     )
 
-    if num_labels <= 1:
-        # Only background – return as-is
-        return binary
+    cleaned = np.zeros_like(binary)
 
-    # Label 0 is always background; find the largest foreground component
-    # stats[:, cv2.CC_STAT_AREA] gives area of each label
-    areas = stats[1:, cv2.CC_STAT_AREA]  # skip background
-    largest_label = 1 + int(np.argmax(areas))
+    for label_id in range(1, num_labels):  # skip background (0)
+        x = stats[label_id, cv2.CC_STAT_LEFT]
+        y = stats[label_id, cv2.CC_STAT_TOP]
+        bw = stats[label_id, cv2.CC_STAT_WIDTH]
+        bh = stats[label_id, cv2.CC_STAT_HEIGHT]
+
+        touches_left = (x == 0)
+        touches_top = (y == 0)
+        touches_right = (x + bw >= w)
+        touches_bottom = (y + bh >= h)
+
+        if touches_left or touches_top or touches_right or touches_bottom:
+            continue  # discard this component
+
+        cleaned[labels == label_id] = 255
+
+    return cleaned
+
+
+def _remove_small_components(
+    binary: np.ndarray,
+    min_area: int = DEFAULT_MIN_COMPONENT_AREA,
+) -> np.ndarray:
+    """Remove connected components smaller than *min_area* pixels."""
+    num_labels, labels, stats, _ = cv2.connectedComponentsWithStats(
+        binary, connectivity=8
+    )
 
     cleaned = np.zeros_like(binary)
-    cleaned[labels == largest_label] = 255
+    for label_id in range(1, num_labels):
+        if stats[label_id, cv2.CC_STAT_AREA] >= min_area:
+            cleaned[labels == label_id] = 255
+
     return cleaned
+
+
+def _select_main_vessel(binary: np.ndarray) -> np.ndarray:
+    """
+    Keep only the single main vessel component.
+
+    Selection heuristic:
+        • Primary: largest area (most likely the vessel).
+        • Tie-break: closest centroid to image centre.
+    """
+    num_labels, labels, stats, centroids = cv2.connectedComponentsWithStats(
+        binary, connectivity=8
+    )
+
+    if num_labels <= 1:
+        return binary  # nothing to select
+
+    h, w = binary.shape
+    img_cx, img_cy = w / 2.0, h / 2.0
+
+    best_label = -1
+    best_key = None
+
+    for label_id in range(1, num_labels):
+        area = int(stats[label_id, cv2.CC_STAT_AREA])
+        cx, cy = centroids[label_id]
+        dist = ((cx - img_cx) ** 2 + (cy - img_cy) ** 2) ** 0.5
+
+        # Larger area wins; smaller distance to centre breaks ties.
+        key = (area, -dist)
+        if best_key is None or key > best_key:
+            best_key = key
+            best_label = label_id
+
+    result = np.zeros_like(binary)
+    if best_label > 0:
+        result[labels == best_label] = 255
+    return result
 
 
 def _morphological_close(
     binary: np.ndarray,
-    kernel_size: int = DEFAULT_MORPH_KERNEL_SIZE,
-    iterations: int = DEFAULT_MORPH_ITERATIONS,
+    kernel_size: int = DEFAULT_CLOSING_KERNEL_SIZE,
+    iterations: int = DEFAULT_CLOSING_ITERATIONS,
 ) -> np.ndarray:
-    """
-    Apply morphological closing to fill small gaps and smooth edges.
-    """
+    """Apply light morphological closing to smooth edges and fill tiny gaps."""
     kernel = cv2.getStructuringElement(
         cv2.MORPH_ELLIPSE, (kernel_size, kernel_size)
     )
-    closed = cv2.morphologyEx(
-        binary, cv2.MORPH_CLOSE, kernel, iterations=iterations
-    )
-    return closed
+    return cv2.morphologyEx(binary, cv2.MORPH_CLOSE, kernel, iterations=iterations)
 
 
-def _find_outer_contour(binary: np.ndarray) -> np.ndarray | None:
+def _fill_holes(binary: np.ndarray) -> np.ndarray:
     """
-    Find the single largest external contour in the binary image.
+    Fill internal holes so only the outer vessel boundary remains.
 
-    Returns:
-        The contour (np.ndarray) or None if no contour is found.
+    Without this, eroding a mask that has holes would also trace the
+    inner boundaries (food / inner rim), which must not appear in the
+    final outer-rim output.
     """
     contours, _ = cv2.findContours(
         binary, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
     )
-
-    if not contours:
-        return None
-
-    # Pick the contour with the largest area
-    largest = max(contours, key=cv2.contourArea)
-    return largest
+    filled = np.zeros_like(binary)
+    if contours:
+        cv2.drawContours(filled, contours, -1, 255, thickness=cv2.FILLED)
+    return filled
 
 
-def _smooth_contour(
-    contour: np.ndarray,
-    epsilon_ratio: float = DEFAULT_SMOOTH_EPSILON_RATIO,
+def _resolve_erosion_kernel_size(
+    clean_mask: np.ndarray,
+    erosion_kernel_size: int,
+) -> int:
+    """
+    Resolve the erosion kernel size.
+
+    If *erosion_kernel_size* is a positive value it is used directly.
+    Otherwise the rim width is chosen automatically as a small fraction
+    of the vessel's bounding box, so the extracted band corresponds to
+    the visible rim instead of a 1-pixel line.
+    """
+    if erosion_kernel_size and int(erosion_kernel_size) >= 3:
+        size = int(erosion_kernel_size)
+    else:
+        ys, xs = np.where(clean_mask > 0)
+        if xs.size == 0:
+            return 3
+        vessel_size = min(
+            int(xs.max() - xs.min()) + 1,
+            int(ys.max() - ys.min()) + 1,
+        )
+        size = max(9, int(round(vessel_size * AUTO_RIM_WIDTH_RATIO)))
+
+    # Elliptical kernels work best with odd dimensions.
+    if size % 2 == 0:
+        size += 1
+    return size
+
+
+# ──────────────────────────────────────────────────────────
+# Public API
+# ──────────────────────────────────────────────────────────
+
+def extract_outer_rim(
+    mask: np.ndarray,
+    erosion_kernel_size: int = DEFAULT_EROSION_KERNEL_SIZE,
+    closing_kernel_size: int = DEFAULT_CLOSING_KERNEL_SIZE,
+    closing_iterations: int = DEFAULT_CLOSING_ITERATIONS,
+    min_component_area: int = DEFAULT_MIN_COMPONENT_AREA,
 ) -> np.ndarray:
     """
-    Smooth / simplify the contour using the Douglas-Peucker algorithm.
+    Extract only the outer rim of a vessel from a segmentation mask.
+
+    Algorithm:
+        1. Binarise
+        2. Remove border-touching components
+        3. Remove small noise blobs
+        4. Keep the main vessel component
+        5. Fill internal holes (food / inner area)
+        6. Morphological closing (smooth, continuous boundary)
+        7. Erode with an elliptical kernel
+        8. rim = clean_mask - eroded_mask
 
     Args:
-        contour: Input contour points.
-        epsilon_ratio: Approximation accuracy as a fraction of the
-                       contour's arc length.  Smaller = more faithful.
+        mask:                 Segmentation mask from YOLO (any dtype).
+        erosion_kernel_size:  Controls rim thickness. 0 = auto (scales
+                              with the vessel size). Explicit values:
+                              3->thin, 5->medium, 9->thick, 21->wide band.
+        closing_kernel_size:  Kernel for morphological closing.
+        closing_iterations:   Iterations for closing.
+        min_component_area:   Minimum area (px²) to keep a component.
 
     Returns:
-        Smoothed contour.
+        np.ndarray: Binary rim mask (uint8, 0/255) containing only
+                    the outer boundary pixels of the vessel.
     """
-    perimeter = cv2.arcLength(contour, closed=True)
-    epsilon = epsilon_ratio * perimeter
-    smoothed = cv2.approxPolyDP(contour, epsilon, closed=True)
-    return smoothed
+    # Step 1 - Binarise
+    binary = _binarise(mask)
+    if not np.any(binary):
+        return binary
+
+    # Step 2 - Remove border-touching components
+    binary = _remove_border_components(binary)
+
+    # Step 3 - Remove small noise
+    binary = _remove_small_components(binary, min_area=min_component_area)
+
+    # Step 4 - Select the main vessel
+    clean_mask = _select_main_vessel(binary)
+    if not np.any(clean_mask):
+        return clean_mask
+
+    # Step 5 - Fill internal holes so inner boundaries (food) disappear
+    clean_mask = _fill_holes(clean_mask)
+
+    # Step 6 - Light morphological closing to smooth the boundary
+    clean_mask = _morphological_close(
+        clean_mask,
+        kernel_size=closing_kernel_size,
+        iterations=closing_iterations,
+    )
+
+    # Step 7 - Erode the clean mask inward
+    kernel_size = _resolve_erosion_kernel_size(clean_mask, erosion_kernel_size)
+    erosion_kernel = cv2.getStructuringElement(
+        cv2.MORPH_ELLIPSE, (kernel_size, kernel_size)
+    )
+    eroded_mask = cv2.erode(clean_mask, erosion_kernel, iterations=1)
+
+    # Step 8 - Rim = original clean mask - eroded mask
+    rim_mask = cv2.subtract(clean_mask, eroded_mask)
+
+    return rim_mask
 
 
 def extract_rim(
     mask: np.ndarray,
-    original_image: np.ndarray,
-    rim_thickness: int = DEFAULT_RIM_THICKNESS,
+    original_image: np.ndarray = None,
+    erosion_kernel_size: int = DEFAULT_EROSION_KERNEL_SIZE,
+    closing_kernel_size: int = DEFAULT_CLOSING_KERNEL_SIZE,
+    closing_iterations: int = DEFAULT_CLOSING_ITERATIONS,
+    min_component_area: int = DEFAULT_MIN_COMPONENT_AREA,
     rim_color: tuple = DEFAULT_RIM_COLOR,
-    morph_kernel_size: int = DEFAULT_MORPH_KERNEL_SIZE,
-    morph_iterations: int = DEFAULT_MORPH_ITERATIONS,
-    smooth_epsilon_ratio: float = DEFAULT_SMOOTH_EPSILON_RATIO,
-    smooth_contour: bool = True,
 ) -> dict:
     """
-    Extract the outer rim of a vessel from a segmentation mask.
-
-    Pipeline:
-        binarise → largest component → morph close →
-        external contour → optional smooth → draw rim
+    Full rim-extraction pipeline with timing and output formats.
 
     Args:
-        mask:                  Segmentation mask (uint8 or float).
-        original_image:        Original BGR image for overlay.
-        rim_thickness:         Contour line thickness in pixels (2-5).
-        rim_color:             BGR colour tuple for the rim line.
-        morph_kernel_size:     Kernel size for morphological closing.
-        morph_iterations:      Number of closing iterations.
-        smooth_epsilon_ratio:  Smoothing factor for approxPolyDP.
-        smooth_contour:        Whether to apply contour smoothing.
+        mask:                 YOLO segmentation mask.
+        original_image:       Optional original BGR image. The real rim
+                              pixels are copied from this image.
+        erosion_kernel_size:  Controls rim thickness. 0 = auto (scales
+                              with the vessel size). Explicit values:
+                              3->thin, 5->medium, 9->thick, 21->wide band.
+        closing_kernel_size:  Morphological closing kernel.
+        closing_iterations:   Closing iterations.
+        min_component_area:   Minimum area to keep a component.
+        rim_color:            BGR colour for the B&W mask pixels.
 
     Returns:
         dict with keys:
-            - "rim_image"      : np.ndarray – original image with rim overlay.
-            - "rim_mask"       : np.ndarray – binary mask of the rim only.
-            - "rim_on_black"   : np.ndarray – rim drawn on a black background.
-            - "contour"        : np.ndarray | None – the rim contour points.
-            - "time"           : float – extraction time in seconds.
-            - "has_rim"        : bool – whether a valid rim was found.
+            "rim_mask"              - binary mask (uint8, 0/255) of the rim.
+            "rim_image"             - BGR: white rim on a black background.
+            "rim_transparent"       - BGRA: white rim, transparent background.
+            "rim_photo"             - BGR: actual rim pixels from the
+                                      original image, rest is black.
+            "rim_photo_white"       - BGR: actual rim pixels on a white
+                                      background (matches reference style).
+            "rim_photo_transparent" - BGRA: actual rim pixels with a
+                                      transparent background.
+            "time"                  - float: extraction time in seconds.
+            "has_rim"               - bool: whether a valid rim was found.
     """
-    height, width = original_image.shape[:2]
+    if original_image is not None:
+        height, width = original_image.shape[:2]
+        if mask.shape[:2] != (height, width):
+            mask = cv2.resize(
+                mask, (width, height), interpolation=cv2.INTER_NEAREST
+            )
+    else:
+        height, width = mask.shape[:2]
 
     with Timer() as t:
-        # ── Step 1: Binarise ──────────────────────────────────────
-        binary = _binarise_mask(mask)
-
-        # ── Step 2: Largest connected component ───────────────────
-        binary = _keep_largest_component(binary)
-
-        # ── Step 3: Morphological closing ─────────────────────────
-        binary = _morphological_close(
-            binary,
-            kernel_size=morph_kernel_size,
-            iterations=morph_iterations,
+        rim_mask = extract_outer_rim(
+            mask,
+            erosion_kernel_size=erosion_kernel_size,
+            closing_kernel_size=closing_kernel_size,
+            closing_iterations=closing_iterations,
+            min_component_area=min_component_area,
         )
 
-        # ── Step 4: External contour ─────────────────────────────
-        contour = _find_outer_contour(binary)
+    has_rim = bool(np.any(rim_mask > 0))
 
-        if contour is None:
-            logger.warning("No outer contour found during rim extraction.")
-            return {
-                "rim_image": original_image.copy(),
-                "rim_mask": np.zeros((height, width), dtype=np.uint8),
-                "rim_on_black": np.zeros_like(original_image),
-                "contour": None,
-                "time": t.elapsed,
-                "has_rim": False,
-            }
+    # ── Black-and-white rim mask (white rim on black) ──
+    rim_image = np.zeros((height, width, 3), dtype=np.uint8)
+    rim_transparent = np.zeros((height, width, 4), dtype=np.uint8)
 
-        # ── Step 5: Optional contour smoothing ───────────────────
-        if smooth_contour:
-            contour = _smooth_contour(contour, epsilon_ratio=smooth_epsilon_ratio)
+    # ── Actual rim image: real pixels from the original photo ──
+    rim_photo = np.zeros((height, width, 3), dtype=np.uint8)
+    rim_photo_white = np.full((height, width, 3), 255, dtype=np.uint8)
+    rim_photo_transparent = np.zeros((height, width, 4), dtype=np.uint8)
 
-        # ── Step 6: Draw the rim ─────────────────────────────────
-        # 6a. Rim mask (white contour on black)
-        rim_mask = np.zeros((height, width), dtype=np.uint8)
-        cv2.drawContours(rim_mask, [contour], -1, 255, rim_thickness)
+    if has_rim:
+        # B&W mask output
+        rim_image[rim_mask > 0] = rim_color
+        rim_transparent[rim_mask > 0, :3] = rim_color
+        rim_transparent[rim_mask > 0, 3] = 255
 
-        # 6b. Rim on black background (coloured)
-        rim_on_black = np.zeros_like(original_image)
-        cv2.drawContours(rim_on_black, [contour], -1, rim_color, rim_thickness)
+        # Real-photo rim outputs
+        if original_image is not None:
+            rim_photo[rim_mask > 0] = original_image[rim_mask > 0]
+            rim_photo_white[rim_mask > 0] = original_image[rim_mask > 0]
+            rim_photo_transparent[rim_mask > 0, :3] = original_image[rim_mask > 0]
+        else:
+            rim_photo[rim_mask > 0] = rim_color
+            rim_photo_white[rim_mask > 0] = rim_color
+            rim_photo_transparent[rim_mask > 0, :3] = rim_color
 
-        # 6c. Rim overlaid on original image
-        rim_image = original_image.copy()
-        cv2.drawContours(rim_image, [contour], -1, rim_color, rim_thickness)
+        rim_photo_transparent[rim_mask > 0, 3] = 255
+    else:
+        logger.warning("No rim could be extracted from the segmentation mask.")
 
-    logger.info("Rim extraction completed in %.4f sec.", t.elapsed)
+    logger.info(
+        "Rim extraction completed in %.4f sec  (kernel=%s, rim_pixels=%d).",
+        t.elapsed,
+        "auto" if not erosion_kernel_size else erosion_kernel_size,
+        int(np.sum(rim_mask > 0)),
+    )
 
     return {
-        "rim_image": rim_image,
         "rim_mask": rim_mask,
-        "rim_on_black": rim_on_black,
-        "contour": contour,
+        "rim_image": rim_image,
+        "rim_transparent": rim_transparent,
+        "rim_photo": rim_photo,
+        "rim_photo_white": rim_photo_white,
+        "rim_photo_transparent": rim_photo_transparent,
         "time": t.elapsed,
-        "has_rim": True,
+        "has_rim": has_rim,
     }
