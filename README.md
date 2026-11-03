@@ -172,44 +172,11 @@ Parameters (thickness, smoothing, kernel size) are configurable via function arg
 
 **Performance:** Targets < 50 ms per image on CPU.
 
----
 
-## 🛣️ Future Work
-
-The architecture is designed for easy extension:
-
-```
-Current Pipeline                Future Extension
-─────────────────              ─────────────────
-Upload Image                   Upload Image
-     ↓                              ↓
-YOLO Segmentation              YOLO Segmentation
-     ↓                              ↓
-Rim Extraction                 Rim Extraction
-     ↓                              ↓
-Display Results                DINOv2 Feature Extraction
-                                    ↓
-                               Vector Embedding
-                                    ↓
-                               Vector Similarity Search
-                                    ↓
-                               Registered Vessel Identification
-```
-
-To add these stages, create new modules under `utils/` (e.g., `utils/feature_extraction.py`, `utils/similarity.py`) and register new processing steps in `app.py` without modifying existing code.
-
----
 
 ## 📸 Screenshots
 
-> *Add screenshots of the running application here.*
-
-| Upload Page | Segmented Vessel | Extracted Rim |
-|:-----------:|:----------------:|:-------------:|
-| *(screenshot)* | *(screenshot)* | *(screenshot)* |
+<img width="1507" height="771" alt="image" src="https://github.com/user-attachments/assets/b1badbfa-c1d2-4d7f-9a17-6b46e5b31206" />
 
 ---
 
-## 📄 License
-
-This project is for internal/research use. Add your preferred license here.
